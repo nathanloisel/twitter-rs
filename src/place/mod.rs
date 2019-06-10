@@ -36,6 +36,7 @@ use serde_json;
 use auth;
 use common::*;
 use links;
+use error;
 
 mod fun;
 
@@ -54,7 +55,7 @@ pub struct Place {
     pub attributes: HashMap<String, String>,
     ///A bounding box of latitude/longitude coordinates that encloses this place.
     #[serde(deserialize_with = "deserialize_bounding_box")]
-    pub bounding_box: Vec<(f64, f64)>,
+    pub bounding_box: BoundingBox,
     ///Name of the country containing this place.
     pub country: String,
     ///Shortened country code representing the country containing this place.
@@ -382,7 +383,78 @@ impl fmt::Display for Accuracy {
     }
 }
 
-fn deserialize_bounding_box<'de, D>(ser: D) -> Result<Vec<(f64, f64)>, D::Error>
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// A point in space, defined by longitude and latitude.
+///
+/// Appears in the Twitter API at the various places where a location must be represented
+pub struct Point {
+    longitude: f64,
+    latitude: f64
+}
+
+impl ::std::fmt::Display for Point {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        write!(
+            f,
+            "{},{}",
+            self.longitude,
+            self.latitude
+        )
+    }
+}
+
+impl Point {
+    /// Construct a new `Point` from a (longitude, latitude) pair.
+    ///
+    /// Will fail if the values are out-of-bounds (-180 < longitude < 180, -90 < latitude < 90)
+    pub fn new(long: f64, lat: f64) -> Result<Point, error::Error> {
+        if long < -180. || long > 180. || lat < -90.0 || lat > 90. {
+            return Err(error::Error::CoordinateError)
+        }
+        Ok(Point { longitude: long, latitude: lat })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// Represents a bounding box of (longitude, latitude) pairs.
+///
+/// Guaranteed to be in-bounds.
+pub struct BoundingBox {
+    southwest: Point,
+    northeast: Point
+}
+
+impl ::std::fmt::Display for BoundingBox {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        write!(
+            f,
+            "{},{}",
+            self.southwest, self.northeast
+        )
+    }
+}
+
+impl BoundingBox {
+    /// New BoundingBox. Expects two `Point`s indicating the southwest and
+    /// northeast points of the bounding box. Checks the values are in-bounds.
+    pub fn new(southwest: Point, northeast: Point) -> Result<BoundingBox, error::Error> {
+        if southwest.latitude > northeast.latitude {
+            return Err(error::Error::CoordinateError);
+        }
+        Ok(BoundingBox {
+            southwest,
+            northeast,
+        })
+    }
+
+    /// Construct a bounding box from (western, southern, eastern, northern) longitudes/latitudes
+    pub fn from_edges(w: f64, s: f64, e: f64, n: f64)-> Result<BoundingBox, error::Error> {
+        BoundingBox::new(Point::new(w, s)?, Point::new(e, n)?)
+    }
+}
+
+
+fn deserialize_bounding_box<'de, D>(ser: D) -> Result<BoundingBox, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -392,5 +464,10 @@ where
         .ok_or_else(|| D::Error::custom("Malformed 'bounding_box' attribute"))
         .and_then(|inner_arr| {
             serde_json::from_value::<Vec<(f64, f64)>>(inner_arr).map_err(|e| D::Error::custom(e))
+        })
+        .and_then(|arr| {
+            let sw = Point::new(arr[0].0, arr[0].1).map_err(|e| D::Error::custom(e))?;
+            let ne = Point::new(arr[2].0, arr[2].1).map_err(|e| D::Error::custom(e))?;
+            BoundingBox::new(sw, ne).map_err(|e| D::Error::custom(e))
         })
 }

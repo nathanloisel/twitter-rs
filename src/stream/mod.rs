@@ -60,6 +60,7 @@ use serde_json;
 use auth::{self, Token};
 use error;
 use links;
+use place;
 use tweet::Tweet;
 
 use common::*;
@@ -343,7 +344,7 @@ pub struct StreamBuilder {
     follow: Vec<u64>,
     track: Vec<String>,
     language: Vec<String>,
-    locations: Vec<BoundingBox>,
+    locations: Vec<place::BoundingBox>,
     filter_level: Option<FilterLevel>,
 }
 
@@ -365,7 +366,7 @@ impl StreamBuilder {
     /// # extern crate egg_mode;
     /// # fn main() {
     /// # let token: egg_mode::Token = unimplemented!();
-    /// use egg_mode::stream::{filter, BoundingBox};
+    /// use egg_mode::stream::filter;
     /// let stream = filter()
     ///     // View tweets related to BBC news, the Guardian and the New York Times
     ///     .follow(&[612473, 87818409, 807095])
@@ -409,14 +410,14 @@ impl StreamBuilder {
     /// # extern crate egg_mode;
     /// # fn main() {
     /// # let token: egg_mode::Token = unimplemented!();
-    /// use egg_mode::stream::{filter, BoundingBox};
+    /// use egg_mode::{stream::filter, place::BoundingBox};
     /// let stream = filter()
     ///     // Only show tweets sent from New York
-    ///     .locations(&[BoundingBox::new((-74.0,40.0),(-73.0,41.0)).unwrap()])
+    ///     .locations(&[BoundingBox::from_edges(-74.0, 40.0, -73.0, 41.0).unwrap()])
     ///     .start(&token);
     /// # }
     /// ```
-    pub fn locations(mut self, locations: &[BoundingBox]) -> Self {
+    pub fn locations(mut self, locations: &[place::BoundingBox]) -> Self {
         self.locations.extend(locations.into_iter());
         self
     }
@@ -500,51 +501,6 @@ pub fn filter() -> StreamBuilder {
 pub fn sample(token: &Token) -> TwitterStream {
     let req = auth::get(links::stream::SAMPLE, token, None);
     TwitterStream::new(req)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-/// Represents a bounding box of (longitude, latitude) pairs.
-///
-/// Guaranteed to be in-bounds.
-// TODO integrate with `bounding_box` in `place` module.
-pub struct BoundingBox {
-    southwest: (f64, f64),
-    northeast: (f64, f64),
-}
-
-impl ::std::fmt::Display for BoundingBox {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        write!(
-            f,
-            "{},{},{},{}",
-            self.southwest.0, self.southwest.1, self.northeast.0, self.northeast.1
-        )
-    }
-}
-
-impl BoundingBox {
-    /// New BoundingBox. Expects (logitude, latitude pairs) describing the southwest and
-    /// northeast points of the bounding box. Checks the values are in-bounds.
-    pub fn new(southwest: (f64, f64), northeast: (f64, f64)) -> Option<BoundingBox> {
-        if
-        // check longitude
-        (southwest.0 < -180. || southwest.0 > 180.)
-            || (northeast.0 < -180. || northeast.0 > 180.)
-
-        // check latitude
-            || (southwest.1 < -90. || southwest.1 > 90.)
-            || (northeast.1 < -90. || northeast.1 > 90.)
-
-        // check consistancy
-            || (southwest.1 > northeast.1)
-        {
-            return None;
-        }
-        Some(BoundingBox {
-            southwest,
-            northeast,
-        })
-    }
 }
 
 #[cfg(test)]
