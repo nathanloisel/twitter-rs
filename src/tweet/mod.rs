@@ -153,8 +153,8 @@ pub struct Tweet {
     //If the user has contributors enabled, this will show which accounts contributed to this
     //tweet.
     //pub contributors: Option<Contributors>,
-    ///If present, the location coordinate attached to the tweet, as a (latitude, longitude) pair.
-    pub coordinates: Option<(f64, f64)>,
+    ///If present, the location coordinate attached to the tweet
+    pub coordinates: Option<place::Point>,
     ///UTC timestamp from when the tweet was posted.
     pub created_at: chrono::DateTime<chrono::Utc>,
     ///If the authenticated user has retweeted this tweet, contains the ID of the retweet.
@@ -709,8 +709,8 @@ pub struct DraftTweet<'a> {
     ///
     ///[DM deep link]: https://business.twitter.com/en/help/campaign-editing-and-optimization/public-to-private-conversation.html
     pub attachment_url: Option<Cow<'a, str>>,
-    ///If present, the latitude/longitude coordinates to attach to the draft.
-    pub coordinates: Option<(f64, f64)>,
+    ///If present, the coordinates to attach to the draft.
+    pub coordinates: Option<place::Point>,
     ///If present (and if `coordinates` is present), indicates whether to display a pin on the
     ///exact coordinate when the eventual tweet is displayed.
     pub display_coordinates: Option<bool>,
@@ -810,9 +810,9 @@ impl<'a> DraftTweet<'a> {
     ///the eventual tweet.
     ///
     ///Location fields will be ignored unless the user has enabled geolocation from their profile.
-    pub fn coordinates(self, latitude: f64, longitude: f64, display: bool) -> Self {
+    pub fn coordinates(self, point: place::Point, display: bool) -> Self {
         DraftTweet {
-            coordinates: Some((latitude, longitude)),
+            coordinates: Some(point),
             display_coordinates: Some(display),
             ..self
         }
@@ -885,9 +885,9 @@ impl<'a> DraftTweet<'a> {
             add_param(&mut params, "attachment_url", url.clone());
         }
 
-        if let Some((lat, long)) = self.coordinates {
-            add_param(&mut params, "lat", lat.to_string());
-            add_param(&mut params, "long", long.to_string());
+        if let Some(point) = self.coordinates {
+            add_param(&mut params, "long", point.longitude.to_string());
+            add_param(&mut params, "lat", point.latitude.to_string());
         }
 
         if let Some(display) = self.display_coordinates {

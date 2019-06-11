@@ -48,8 +48,8 @@ pub fn show(id: &str, token: &auth::Token) -> FutureResponse<Place> {
 /// use tokio::runtime::current_thread::block_on_all;
 /// # fn main() {
 /// # let token: Token = unimplemented!();
-/// use egg_mode::place::{self, PlaceType};
-/// let result = block_on_all(place::reverse_geocode(51.507222, -0.1275)
+/// use egg_mode::place::{self, PlaceType, Point};
+/// let result = block_on_all(place::reverse_geocode(Point::new(51.507222, -0.1275))
 ///                                 .granularity(PlaceType::City)
 ///                                 .call(&token))
 ///                  .unwrap();
@@ -57,8 +57,8 @@ pub fn show(id: &str, token: &auth::Token) -> FutureResponse<Place> {
 /// assert!(result.results.iter().any(|pl| pl.full_name == "London, England"));
 /// # }
 /// ```
-pub fn reverse_geocode(latitude: f64, longitude: f64) -> GeocodeBuilder {
-    GeocodeBuilder::new(latitude, longitude)
+pub fn reverse_geocode(coordinate: Point) -> GeocodeBuilder {
+    GeocodeBuilder::new(coordinate)
 }
 
 fn parse_url<'a>(base: &'static str, full: &'a str) -> Result<ParamList<'a>, error::Error> {
@@ -111,8 +111,8 @@ pub fn reverse_geocode_url<'a>(url: &'a str, token: &auth::Token) -> CachedSearc
 /// use tokio::runtime::current_thread::block_on_all;
 /// # fn main() {
 /// # let token: Token = unimplemented!();
-/// use egg_mode::place::{self, PlaceType};
-/// let result = block_on_all(place::search_point(51.507222, -0.1275)
+/// use egg_mode::place::{self, PlaceType, Point};
+/// let result = block_on_all(place::search_point(Point::new(51.507222, -0.1275))
 ///                                 .granularity(PlaceType::City)
 ///                                 .call(&token))
 ///                  .unwrap();
@@ -120,8 +120,8 @@ pub fn reverse_geocode_url<'a>(url: &'a str, token: &auth::Token) -> CachedSearc
 /// assert!(result.results.iter().any(|pl| pl.full_name == "London, England"));
 /// # }
 /// ```
-pub fn search_point(latitude: f64, longitude: f64) -> SearchBuilder<'static> {
-    SearchBuilder::new(PlaceQuery::LatLon(latitude, longitude))
+pub fn search_point(point: Point) -> SearchBuilder<'static> {
+    SearchBuilder::new(PlaceQuery::Point(point))
 }
 
 /// Begins building a location search via a text query.

@@ -413,7 +413,7 @@ impl StreamBuilder {
     /// use egg_mode::{stream::filter, place::BoundingBox};
     /// let stream = filter()
     ///     // Only show tweets sent from New York
-    ///     .locations(&[BoundingBox::from_edges(-74.0, 40.0, -73.0, 41.0).unwrap()])
+    ///     .locations(&[BoundingBox::from_edges(-74.0, 40.0, -73.0, 41.0)])
     ///     .start(&token);
     /// # }
     /// ```
@@ -472,7 +472,13 @@ impl StreamBuilder {
             let locs = self
                 .locations
                 .iter()
-                .map(|bb| bb.to_string())
+                .map(|bb| {
+                    format!("{},{},{},{}",
+                            bb.southwest.longitude,
+                            bb.southwest.latitude,
+                            bb.northeast.longitude,
+                            bb.northeast.latitude)
+                })
                 .collect::<Vec<String>>()
                 .join(",");
             add_param(&mut params, "locations", locs);

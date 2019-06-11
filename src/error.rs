@@ -147,8 +147,6 @@ pub enum Error {
     ///This error should be considerably rare, but is included to ensure that egg-mode doesn't
     ///panic if it receives malformed headers or the like.
     HeaderConvertError(std::num::ParseIntError),
-    /// An invalid geospatial coordianate was encountered
-    CoordinateError
 }
 
 impl std::fmt::Display for Error {
@@ -173,7 +171,6 @@ impl std::fmt::Display for Error {
             Error::TimerShutdownError(ref err) => write!(f, "Timer runtime shutdown: {}", err),
             Error::HeaderParseError(ref err) => write!(f, "Error decoding header: {}", err),
             Error::HeaderConvertError(ref err) => write!(f, "Error converting header: {}", err),
-            Error::CoordinateError => write!(f, "Invalid coordinate")
         }
     }
 }
@@ -198,7 +195,6 @@ impl std::error::Error for Error {
             Error::TimerShutdownError(ref err) => err.description(),
             Error::HeaderParseError(ref err) => err.description(),
             Error::HeaderConvertError(ref err) => err.description(),
-            Error::CoordinateError => "Invalid coordinate"
         }
     }
 

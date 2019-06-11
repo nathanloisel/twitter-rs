@@ -36,7 +36,6 @@ use serde_json;
 use auth;
 use common::*;
 use links;
-use error;
 
 mod fun;
 
@@ -137,7 +136,7 @@ impl<'de> Deserialize<'de> for SearchResult {
 ///list of results from Twitter will be returned, as well as a URL to perform the same search via
 ///`reverse_geocode_url`.
 pub struct GeocodeBuilder {
-    coordinate: (f64, f64),
+    coordinate: Point,
     accuracy: Option<Accuracy>,
     granularity: Option<PlaceType>,
     max_results: Option<u32>,
@@ -145,9 +144,9 @@ pub struct GeocodeBuilder {
 
 impl GeocodeBuilder {
     ///Begins building a reverse-geocode query with the given coordinate.
-    fn new(latitude: f64, longitude: f64) -> Self {
+    fn new(point: Point) -> Self {
         GeocodeBuilder {
-            coordinate: (latitude, longitude),
+            coordinate: point,
             accuracy: None,
             granularity: None,
             max_results: None,
@@ -195,8 +194,8 @@ impl GeocodeBuilder {
     pub fn call(&self, token: &auth::Token) -> FutureResponse<SearchResult> {
         let mut params = HashMap::new();
 
-        add_param(&mut params, "lat", self.coordinate.0.to_string());
-        add_param(&mut params, "long", self.coordinate.1.to_string());
+        add_param(&mut params, "long", self.coordinate.longitude.to_string());
+        add_param(&mut params, "lat", self.coordinate.latitude.to_string());
 
         if let Some(ref accuracy) = self.accuracy {
             add_param(&mut params, "accuracy", accuracy.to_string());
@@ -218,7 +217,7 @@ impl GeocodeBuilder {
 }
 
 enum PlaceQuery<'a> {
-    LatLon(f64, f64),
+    Point(Point),
     Query(&'a str),
     IPAddress(&'a str),
 }
@@ -322,9 +321,9 @@ impl<'a> SearchBuilder<'a> {
         let mut params = HashMap::new();
 
         match self.query {
-            PlaceQuery::LatLon(lat, long) => {
-                add_param(&mut params, "lat", lat.to_string());
-                add_param(&mut params, "long", long.to_string());
+            PlaceQuery::Point(pt) => {
+                add_param(&mut params, "long", pt.longitude.to_string());
+                add_param(&mut params, "lat", pt.latitude.to_string());
             }
             PlaceQuery::Query(text) => {
                 add_param(&mut params, "query", text);
@@ -386,32 +385,30 @@ impl fmt::Display for Accuracy {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 /// A point in space, defined by longitude and latitude.
 ///
-/// Appears in the Twitter API at the various places where a location must be represented
+/// Appears in the Twitter API at the various places where a location must be represented.
+/// Note that this library follows Twitter conventions of using longitude/latitude (as opposed
+/// to latitude/longitude) pairs
 pub struct Point {
-    longitude: f64,
-    latitude: f64
+    /// Longitude, should be between -180 and +180
+    pub longitude: f64,
+    /// Latitude, should be between -90 and +90
+    pub latitude: f64
 }
 
-impl ::std::fmt::Display for Point {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        write!(
-            f,
-            "{},{}",
-            self.longitude,
-            self.latitude
-        )
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D>(deser: D) -> Result<Point, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = <(f64, f64)>::deserialize(deser)?;
+        Ok(Point::new(raw.0, raw.1))
     }
 }
 
 impl Point {
     /// Construct a new `Point` from a (longitude, latitude) pair.
-    ///
-    /// Will fail if the values are out-of-bounds (-180 < longitude < 180, -90 < latitude < 90)
-    pub fn new(long: f64, lat: f64) -> Result<Point, error::Error> {
-        if long < -180. || long > 180. || lat < -90.0 || lat > 90. {
-            return Err(error::Error::CoordinateError)
-        }
-        Ok(Point { longitude: long, latitude: lat })
+    pub fn new(long: f64, lat: f64) -> Point {
+        Point { longitude: long, latitude: lat }
     }
 }
 
@@ -420,36 +417,25 @@ impl Point {
 ///
 /// Guaranteed to be in-bounds.
 pub struct BoundingBox {
-    southwest: Point,
-    northeast: Point
-}
-
-impl ::std::fmt::Display for BoundingBox {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        write!(
-            f,
-            "{},{}",
-            self.southwest, self.northeast
-        )
-    }
+    /// Southwest point of the bounding box
+    pub southwest: Point,
+    /// Northeast point of the bounding box
+    pub northeast: Point
 }
 
 impl BoundingBox {
-    /// New BoundingBox. Expects two `Point`s indicating the southwest and
-    /// northeast points of the bounding box. Checks the values are in-bounds.
-    pub fn new(southwest: Point, northeast: Point) -> Result<BoundingBox, error::Error> {
-        if southwest.latitude > northeast.latitude {
-            return Err(error::Error::CoordinateError);
-        }
-        Ok(BoundingBox {
+    /// Construct new BoundingBox, expects two `Point`s indicating the southwest and
+    /// northeast points of the bounding box.
+    pub fn new(southwest: Point, northeast: Point) -> BoundingBox {
+        BoundingBox {
             southwest,
             northeast,
-        })
+        }
     }
 
     /// Construct a bounding box from (western, southern, eastern, northern) longitudes/latitudes
-    pub fn from_edges(w: f64, s: f64, e: f64, n: f64)-> Result<BoundingBox, error::Error> {
-        BoundingBox::new(Point::new(w, s)?, Point::new(e, n)?)
+    pub fn from_edges(w: f64, s: f64, e: f64, n: f64)-> BoundingBox {
+        BoundingBox::new(Point::new(w, s), Point::new(e, n))
     }
 }
 
@@ -465,9 +451,9 @@ where
         .and_then(|inner_arr| {
             serde_json::from_value::<Vec<(f64, f64)>>(inner_arr).map_err(|e| D::Error::custom(e))
         })
-        .and_then(|arr| {
-            let sw = Point::new(arr[0].0, arr[0].1).map_err(|e| D::Error::custom(e))?;
-            let ne = Point::new(arr[2].0, arr[2].1).map_err(|e| D::Error::custom(e))?;
-            BoundingBox::new(sw, ne).map_err(|e| D::Error::custom(e))
+        .map(|arr| {
+            let sw = Point::new(arr[0].0, arr[0].1);
+            let ne = Point::new(arr[2].0, arr[2].1);
+            BoundingBox::new(sw, ne)
         })
 }

@@ -56,7 +56,7 @@ pub(crate) struct RawExtendedTweet {
 pub(crate) struct RawCoordinates {
     #[serde(rename = "type")]
     pub kind: String,
-    pub coordinates: (f64, f64),
+    pub coordinates: place::Point,
 }
 
 #[derive(Debug, Clone, Deserialize)]
