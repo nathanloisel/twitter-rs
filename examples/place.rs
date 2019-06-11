@@ -32,7 +32,7 @@ fn main() {
     println!("");
 
     let result = block_on_all(
-        egg_mode::place::reverse_geocode(Point::new(51.507222, -0.1275))
+        egg_mode::place::reverse_geocode(Point::new(-0.1275, 51.507222))
             .granularity(PlaceType::City)
             .call(&config.token),
     )

@@ -49,7 +49,7 @@ pub fn show(id: &str, token: &auth::Token) -> FutureResponse<Place> {
 /// # fn main() {
 /// # let token: Token = unimplemented!();
 /// use egg_mode::place::{self, PlaceType, Point};
-/// let result = block_on_all(place::reverse_geocode(Point::new(51.507222, -0.1275))
+/// let result = block_on_all(place::reverse_geocode(Point::new(-0.1275, 51.507222))
 ///                                 .granularity(PlaceType::City)
 ///                                 .call(&token))
 ///                  .unwrap();
@@ -112,7 +112,7 @@ pub fn reverse_geocode_url<'a>(url: &'a str, token: &auth::Token) -> CachedSearc
 /// # fn main() {
 /// # let token: Token = unimplemented!();
 /// use egg_mode::place::{self, PlaceType, Point};
-/// let result = block_on_all(place::search_point(Point::new(51.507222, -0.1275))
+/// let result = block_on_all(place::search_point(Point::new(-0.1275, 51.507222))
 ///                                 .granularity(PlaceType::City)
 ///                                 .call(&token))
 ///                  .unwrap();
