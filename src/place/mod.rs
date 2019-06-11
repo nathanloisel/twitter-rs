@@ -392,7 +392,7 @@ pub struct Point {
     /// Longitude, should be between -180 and +180
     pub longitude: f64,
     /// Latitude, should be between -90 and +90
-    pub latitude: f64
+    pub latitude: f64,
 }
 
 impl<'de> Deserialize<'de> for Point {
@@ -408,7 +408,10 @@ impl<'de> Deserialize<'de> for Point {
 impl Point {
     /// Construct a new `Point` from a (longitude, latitude) pair.
     pub fn new(long: f64, lat: f64) -> Point {
-        Point { longitude: long, latitude: lat }
+        Point {
+            longitude: long,
+            latitude: lat,
+        }
     }
 }
 
@@ -420,7 +423,7 @@ pub struct BoundingBox {
     /// Southwest point of the bounding box
     pub southwest: Point,
     /// Northeast point of the bounding box
-    pub northeast: Point
+    pub northeast: Point,
 }
 
 impl BoundingBox {
@@ -434,11 +437,10 @@ impl BoundingBox {
     }
 
     /// Construct a bounding box from (western, southern, eastern, northern) longitudes/latitudes
-    pub fn from_edges(w: f64, s: f64, e: f64, n: f64)-> BoundingBox {
+    pub fn from_edges(w: f64, s: f64, e: f64, n: f64) -> BoundingBox {
         BoundingBox::new(Point::new(w, s), Point::new(e, n))
     }
 }
-
 
 fn deserialize_bounding_box<'de, D>(ser: D) -> Result<BoundingBox, D::Error>
 where

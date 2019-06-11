@@ -473,11 +473,13 @@ impl StreamBuilder {
                 .locations
                 .iter()
                 .map(|bb| {
-                    format!("{},{},{},{}",
-                            bb.southwest.longitude,
-                            bb.southwest.latitude,
-                            bb.northeast.longitude,
-                            bb.northeast.latitude)
+                    format!(
+                        "{},{},{},{}",
+                        bb.southwest.longitude,
+                        bb.southwest.latitude,
+                        bb.northeast.longitude,
+                        bb.northeast.latitude
+                    )
                 })
                 .collect::<Vec<String>>()
                 .join(",");
