@@ -41,8 +41,8 @@ fn main() {
     println!(
         "{} results for reverse-geocoding {}, {}:",
         result.results.len(),
+        -0.1275,
         51.507222,
-        -0.1275
     );
 
     for place in &result.results {
