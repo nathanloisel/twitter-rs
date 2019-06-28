@@ -325,17 +325,21 @@ impl<'de> Deserialize<'de> for TwitterUser {
     {
         let mut raw = raw::RawTwitterUser::deserialize(deser)?;
 
-        if let Some(ref description) = raw.description {
-            for entity in &mut raw.entities.description.urls {
+        if let (Some(ref description), Some(ref mut entities)) =
+            (&raw.description, &mut raw.entities)
+        {
+            for entity in &mut entities.description.urls {
                 codepoints_to_bytes(&mut entity.range, description);
             }
         }
 
-        if let (&mut Some(ref url), &mut Some(ref mut entities)) =
-            (&mut raw.url, &mut raw.entities.url)
-        {
-            for entity in &mut entities.urls {
-                codepoints_to_bytes(&mut entity.range, url);
+        if let Some(ref mut entities) = &mut raw.entities {
+            if let (&mut Some(ref url), &mut Some(ref mut entities)) =
+                (&mut raw.url, &mut entities.url)
+            {
+                for entity in &mut entities.urls {
+                    codepoints_to_bytes(&mut entity.range, url);
+                }
             }
         }
 
@@ -380,6 +384,7 @@ impl<'de> Deserialize<'de> for TwitterUser {
             verified: raw.verified,
             withheld_in_countries: raw.withheld_in_countries,
             withheld_scope: raw.withheld_scope,
+            email: raw.email,
         })
     }
 }
