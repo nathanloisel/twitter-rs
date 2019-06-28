@@ -964,7 +964,7 @@ pub fn verify_tokens(
     add_param(&mut params, "skip_status", skip_status.to_string());
     add_param(&mut params, "include_email", include_email.to_string());
 
-    let req = get(links::auth::VERIFY_CREDENTIALS, token,  Some(&params));
+    let req = get(links::auth::VERIFY_CREDENTIALS, token, Some(&params));
 
     make_parsed_future(req)
 }
