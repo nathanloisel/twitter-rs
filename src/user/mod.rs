@@ -199,7 +199,7 @@ pub struct TwitterUser {
     pub description: Option<String>,
     /// Link information that has been parsed out of the `url` or `description` fields given by the
     /// user.
-    pub entities: UserEntities,
+    pub entities: Option<UserEntities>,
     /// The number of tweets this user has favorited or liked in the account's lifetime.
     /// The term "favourites" and its British spelling are used for historical reasons.
     pub favourites_count: i32,
@@ -314,6 +314,8 @@ pub struct TwitterUser {
     pub withheld_in_countries: Option<Vec<String>>,
     /// When present, indicates whether the content being withheld is a "status" or "user".
     pub withheld_scope: Option<String>,
+    /// The user email, to get it, the additional permission: "Request email address from users" have to be enable on your twitter app dashboard
+    pub email: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for TwitterUser {
