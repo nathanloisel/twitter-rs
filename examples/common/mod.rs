@@ -53,7 +53,7 @@ impl Config {
                 access: access_token,
             };
 
-            if let Err(err) = block_on_all(egg_mode::verify_tokens(&token)) {
+            if let Err(err) = block_on_all(egg_mode::verify_tokens(&token, false, false, false)) {
                 println!("We've hit an error using your old tokens: {:?}", err);
                 println!("We'll have to reauthenticate before continuing.");
                 std::fs::remove_file("twitter_settings").unwrap();

@@ -9,6 +9,7 @@
 //! authentication overview is written on the Token type, rather than in this module docs.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -627,7 +628,7 @@ pub fn request_token<S: Into<String>>(con_token: &KeyPair, callback: S) -> Twitt
                     return Err(error::Error::InvalidResponse(
                         "unexpected end of request_token response",
                         None,
-                    ))
+                    ));
                 }
             }
         }
@@ -834,7 +835,7 @@ impl Future for AuthFuture {
                         return Err(error::Error::InvalidResponse(
                             "unexpected end of response in access_token",
                             None,
-                        ))
+                        ));
                     }
                 }
             }
@@ -948,8 +949,22 @@ pub fn invalidate_bearer(con_token: &KeyPair, token: &Token) -> TwitterFuture<To
 /// If you have cached access tokens, using this method is a convenient way to make sure they're
 /// still valid. If the user has revoked access from your app, this function will return an error
 /// from Twitter indicating that you don't have access to the user.
-pub fn verify_tokens(token: &Token) -> FutureResponse<crate::user::TwitterUser> {
-    let req = get(links::auth::VERIFY_CREDENTIALS, token, None);
+pub fn verify_tokens(
+    token: &Token,
+    include_entities: bool,
+    skip_status: bool,
+    include_email: bool,
+) -> FutureResponse<crate::user::TwitterUser> {
+    let mut params = HashMap::new();
+    add_param(
+        &mut params,
+        "include_entities",
+        include_entities.to_string(),
+    );
+    add_param(&mut params, "skip_status", skip_status.to_string());
+    add_param(&mut params, "include_email", include_email.to_string());
+
+    let req = get(links::auth::VERIFY_CREDENTIALS, token,  Some(&params));
 
     make_parsed_future(req)
 }
