@@ -894,14 +894,13 @@ pub async fn verify_tokens(
     skip_status: bool,
     include_email: bool,
 ) -> Result<Response<crate::user::TwitterUser>> {
-    let mut params = HashMap::new();
-    add_param(
-        &mut params,
+    let mut params = ParamList::new()
+    .add_param(
         "include_entities",
         include_entities.to_string(),
-    );
-    add_param(&mut params, "skip_status", skip_status.to_string());
-    add_param(&mut params, "include_email", include_email.to_string());
+    )
+    .add_param("skip_status", skip_status.to_string())
+    .add_param("include_email", include_email.to_string());
 
     let req = get(links::auth::VERIFY_CREDENTIALS, token, Some(&params));
     request_with_json_response(req).await
