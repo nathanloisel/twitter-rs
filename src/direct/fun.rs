@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
-
 use crate::common::*;
 use crate::user::UserID;
 use crate::{auth, links};
@@ -11,13 +9,10 @@ use crate::{auth, links};
 use super::*;
 
 ///Lookup a single DM by its numeric ID.
-pub fn show(id: u64, token: &auth::Token) -> FutureResponse<DirectMessage> {
-    let mut params = HashMap::new();
-    add_param(&mut params, "id", id.to_string());
-
+pub async fn show(id: u64, token: &auth::Token) -> Result<Response<DirectMessage>, error::Error> {
+    let params = ParamList::default().add_param("id", id.to_string());
     let req = auth::get(links::direct::SHOW, token, Some(&params));
-
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Create a `Timeline` struct to navigate the direct messages received by the authenticated user.
@@ -39,19 +34,18 @@ pub fn sent(token: &auth::Token) -> Timeline {
 ///DM beforehand.
 ///
 ///Upon successfully sending the DM, the message will be returned.
-pub fn send<'id, T: Into<UserID<'id>>>(
+pub async fn send<T: Into<UserID>>(
     to: T,
-    text: &str,
+    text: CowStr,
     token: &auth::Token,
-) -> FutureResponse<DirectMessage> {
-    let mut params = HashMap::new();
-    add_name_param(&mut params, &to.into());
-
-    add_param(&mut params, "text", text);
+) -> Result<Response<DirectMessage>, error::Error> {
+    let params = ParamList::new()
+        .add_name_param(to.into())
+        .add_param("text", text);
 
     let req = auth::post(links::direct::SEND, token, Some(&params));
 
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Delete the direct message with the given ID.
@@ -60,13 +54,10 @@ pub fn send<'id, T: Into<UserID<'id>>>(
 ///
 ///On a successful deletion, the future returned by this function yields the freshly-deleted
 ///message.
-pub fn delete(id: u64, token: &auth::Token) -> FutureResponse<DirectMessage> {
-    let mut params = HashMap::new();
-    add_param(&mut params, "id", id.to_string());
-
+pub async fn delete(id: u64, token: &auth::Token) -> Result<Response<DirectMessage>, error::Error> {
+    let params = ParamList::new().add_param("id", id.to_string());
     let req = auth::post(links::direct::DELETE, token, Some(&params));
-
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Create a `ConversationTimeline` loader that can load direct messages as a collection of

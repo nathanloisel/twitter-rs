@@ -11,24 +11,24 @@
 //!
 //! ### Example
 //! ```rust,no_run
-//! # fn main() {
+//! # #[tokio::main]
+//! # async fn main() {
 //! # let token: egg_mode::Token = unimplemented!();
 //! use egg_mode::stream::{filter, StreamMessage};
-//! use tokio::runtime::current_thread::block_on_all;
-//! use futures::Stream;
+//! use futures::{Stream, TryStreamExt};
 //!
 //! let stream = filter()
 //!     // find tweets mentioning any of the following:
 //!     .track(&["rustlang", "python", "java", "javascript"])
 //!     .start(&token);
 //!
-//! block_on_all(stream.for_each(|m| {
+//! stream.try_for_each(|m| {
 //!     // Check the message type and print tweet to console
 //!     if let StreamMessage::Tweet(tweet) = m {
 //!         println!("Received tweet from {}:\n{}\n", tweet.user.unwrap().name, tweet.text);
 //!     }
 //!     futures::future::ok(())
-//! })).expect("Stream error");
+//! }).await.expect("Stream error");
 //! # }
 //! ```
 //! ### Connection notes
@@ -43,11 +43,13 @@
 //! * In the case of an unreliable connection (e.g. mobile network), fall back to the polling API
 //!
 //! The [official guide](https://developer.twitter.com/en/docs/tweets/filter-realtime/guides/connecting) has more information.
-use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
+use std::task::{Context, Poll};
 use std::{self, io};
 
-use futures::{Async, Future, Poll, Stream};
+use futures::Stream;
 use hyper::client::ResponseFuture;
 use hyper::{Body, Request};
 use serde::de::Error;
@@ -59,6 +61,7 @@ use crate::common::*;
 use crate::tweet::Tweet;
 use crate::{error, links};
 
+// TODO rewrite this
 // https://developer.twitter.com/en/docs/tweets/filter-realtime/guides/streaming-message-types
 /// Represents the kinds of messages that can be sent over Twitter's Streaming API.
 #[derive(Debug)]
@@ -222,26 +225,25 @@ impl TwitterStream {
 }
 
 impl Stream for TwitterStream {
-    type Item = StreamMessage;
-    type Error = error::Error;
+    type Item = Result<StreamMessage, error::Error>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         if let Some(req) = self.request.take() {
-            self.response = Some(get_response(req)?);
+            self.response = Some(get_response(req));
         }
 
         if let Some(mut resp) = self.response.take() {
-            match resp.poll() {
-                Err(e) => return Err(e.into()),
-                Ok(Async::NotReady) => {
+            match Pin::new(&mut resp).poll(cx) {
+                Poll::Pending => {
                     self.response = Some(resp);
-                    return Ok(Async::NotReady);
+                    return Poll::Pending;
                 }
-                Ok(Async::Ready(resp)) => {
+                Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
+                Poll::Ready(Ok(resp)) => {
                     let status = resp.status();
                     if !status.is_success() {
                         //TODO: should i try to pull the response regardless?
-                        return Err(error::Error::BadStatus(status));
+                        return Poll::Ready(Some(Err(error::Error::BadStatus(status))));
                     }
 
                     self.body = Some(resp.into_body());
@@ -251,20 +253,19 @@ impl Stream for TwitterStream {
 
         if let Some(mut body) = self.body.take() {
             loop {
-                match body.poll() {
-                    Err(e) => {
+                match Pin::new(&mut body).poll_next(cx) {
+                    Poll::Pending => {
                         self.body = Some(body);
-                        return Err(e.into());
+                        return Poll::Pending;
                     }
-                    Ok(Async::NotReady) => {
+                    Poll::Ready(None) => {
+                        return Poll::Ready(None);
+                    }
+                    Poll::Ready(Some(Err(e))) => {
                         self.body = Some(body);
-                        return Ok(Async::NotReady);
+                        return Poll::Ready(Some(Err(e.into())));
                     }
-                    Ok(Async::Ready(None)) => {
-                        //TODO: introduce a new error for this?
-                        return Err(error::Error::FutureAlreadyCompleted);
-                    }
-                    Ok(Async::Ready(Some(chunk))) => {
+                    Poll::Ready(Some(Ok(chunk))) => {
                         self.buf.extend(&*chunk);
 
                         if let Some(pos) = self.buf.windows(2).position(|w| w == b"\r\n") {
@@ -281,13 +282,13 @@ impl Stream for TwitterStream {
                             };
 
                             self.buf.drain(..pos);
-                            return Ok(Async::Ready(Some(resp?)));
+                            return Poll::Ready(Some(Ok(resp?)));
                         }
                     }
                 }
             }
         } else {
-            Err(error::Error::FutureAlreadyCompleted)
+            Poll::Ready(Some(Err(error::Error::FutureAlreadyCompleted)))
         }
     }
 }
@@ -434,11 +435,8 @@ impl StreamBuilder {
         // 'invalid' from POV of twitter api, rather it is invalid at the application level.
         // So I think the current behaviour make sense.
 
-        let mut params = HashMap::new();
-
-        if let Some(filter_level) = self.filter_level {
-            add_param(&mut params, "filter_level", filter_level.to_string());
-        }
+        let mut params =
+            ParamList::new().add_opt_param("filter_level", self.filter_level.map_string());
 
         if !self.follow.is_empty() {
             let to_follow = self
@@ -447,17 +445,17 @@ impl StreamBuilder {
                 .map(|id| id.to_string())
                 .collect::<Vec<String>>()
                 .join(",");
-            add_param(&mut params, "follow", to_follow);
+            params.add_param_ref("follow", to_follow);
         }
 
         if !self.track.is_empty() {
             let to_track = self.track.join(",");
-            add_param(&mut params, "track", to_track);
+            params.add_param_ref("track", to_track);
         }
 
         if !self.language.is_empty() {
             let langs = self.language.join(",");
-            add_param(&mut params, "language", langs);
+            params.add_param_ref("language", langs);
         }
 
         if !self.locations.is_empty() {
@@ -467,7 +465,7 @@ impl StreamBuilder {
                 .map(|bb| bb.to_string())
                 .collect::<Vec<String>>()
                 .join(",");
-            add_param(&mut params, "locations", locs);
+            params.add_param_ref("locations", locs);
         }
 
         let req = auth::post(self.url, token, Some(&params));

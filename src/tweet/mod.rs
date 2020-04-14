@@ -54,20 +54,21 @@
 //! - `user_timeline`/`liked_by`
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
+use std::task::{Context, Poll};
 
 use chrono;
-use futures::{Async, Future, Poll};
 use hyper::{Body, Request};
 use regex::Regex;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 
 use crate::common::*;
-use crate::error::Error::InvalidResponse;
+use crate::error::{Error::InvalidResponse, Result};
 use crate::stream::FilterLevel;
-use crate::{auth, entities, error, links, place, user};
+use crate::{auth, entities, error, links, media, place, user};
 
 mod fun;
 mod raw;
@@ -208,7 +209,7 @@ pub struct Tweet {
     ///who retweeted the status, as well as the original poster.
     pub retweeted_status: Option<Box<Tweet>>,
     ///The application used to post the tweet.
-    pub source: TweetSource,
+    pub source: Option<TweetSource>,
     ///The text of the tweet. For "extended" tweets, opening reply mentions and/or attached media
     ///or quoted tweet links do not count against character count, so this could be longer than 280
     ///characters in those situations.
@@ -233,7 +234,7 @@ pub struct Tweet {
 }
 
 impl<'de> Deserialize<'de> for Tweet {
-    fn deserialize<D>(deser: D) -> Result<Tweet, D::Error>
+    fn deserialize<D>(deser: D) -> std::result::Result<Tweet, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -323,7 +324,7 @@ pub struct TweetSource {
 impl FromStr for TweetSource {
     type Err = error::Error;
 
-    fn from_str(full: &str) -> Result<TweetSource, error::Error> {
+    fn from_str(full: &str) -> Result<TweetSource> {
         use lazy_static::lazy_static;
         lazy_static! {
             static ref RE_URL: Regex = Regex::new("href=\"(.*?)\"").unwrap();
@@ -355,19 +356,16 @@ impl FromStr for TweetSource {
                 Some(full.to_string()),
             ))?;
 
-        Ok(TweetSource {
-            name: name,
-            url: url,
-        })
+        Ok(TweetSource { name, url })
     }
 }
 
-fn deserialize_tweet_source<'de, D>(ser: D) -> Result<TweetSource, D::Error>
+fn deserialize_tweet_source<'de, D>(ser: D) -> std::result::Result<Option<TweetSource>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(ser)?;
-    Ok(TweetSource::from_str(&s).map_err(|e| D::Error::custom(e))?)
+    Ok(TweetSource::from_str(&s).ok())
 }
 
 ///Container for URL, hashtag, mention, and media information associated with a tweet.
@@ -415,13 +413,13 @@ pub struct ExtendedTweetEntities {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// let timeline = egg_mode::tweet::home_timeline(&token).with_page_size(10);
 ///
-/// let (timeline, feed) = block_on_all(timeline.start()).unwrap();
-/// for tweet in &feed {
+/// let (timeline, feed) = timeline.start().await.unwrap();
+/// for tweet in &*feed {
 ///     println!("<@{}> {}", tweet.user.as_ref().unwrap().screen_name, tweet.text);
 /// }
 /// # }
@@ -432,13 +430,13 @@ pub struct ExtendedTweetEntities {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// # let timeline = egg_mode::tweet::home_timeline(&token);
-/// # let (timeline, _) = block_on_all(timeline.start()).unwrap();
-/// let (timeline, feed) = block_on_all(timeline.older(None)).unwrap();
-/// for tweet in &feed {
+/// # let (timeline, _) = timeline.start().await.unwrap();
+/// let (timeline, feed) = timeline.older(None).await.unwrap();
+/// for tweet in &*feed {
 ///     println!("<@{}> {}", tweet.user.as_ref().unwrap().screen_name, tweet.text);
 /// }
 /// # }
@@ -453,24 +451,24 @@ pub struct ExtendedTweetEntities {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// let timeline = egg_mode::tweet::home_timeline(&token)
 ///                                .with_page_size(10);
 ///
-/// let (timeline, _feed) = block_on_all(timeline.start()).unwrap();
+/// let (timeline, _feed) = timeline.start().await.unwrap();
 ///
 /// //keep the max_id for later
 /// let reload_id = timeline.max_id.unwrap();
 ///
 /// //simulate scrolling down a little bit
-/// let (timeline, _feed) = block_on_all(timeline.older(None)).unwrap();
-/// let (mut timeline, _feed) = block_on_all(timeline.older(None)).unwrap();
+/// let (timeline, _feed) = timeline.older(None).await.unwrap();
+/// let (mut timeline, _feed) = timeline.older(None).await.unwrap();
 ///
 /// //reload the timeline with only what's new
 /// timeline.reset();
-/// let (timeline, _new_posts) = block_on_all(timeline.older(Some(reload_id))).unwrap();
+/// let (timeline, _new_posts) = timeline.older(Some(reload_id)).await.unwrap();
 /// # }
 /// ```
 ///
@@ -485,13 +483,13 @@ pub struct ExtendedTweetEntities {
 /// If you want to manually pull tweets between certain IDs, the baseline `call` function can do
 /// that for you. Keep in mind, though, that `call` doesn't update the `min_id` or `max_id` fields,
 /// so you'll have to set those yourself if you want to follow up with `older` or `newer`.
-pub struct Timeline<'a> {
+pub struct Timeline {
     ///The URL to request tweets from.
     link: &'static str,
     ///The token to authorize requests with.
     token: auth::Token,
     ///Optional set of params to include prior to adding timeline navigation parameters.
-    params_base: Option<ParamList<'a>>,
+    params_base: Option<ParamList>,
     ///The maximum number of tweets to return in a single call. Twitter doesn't guarantee returning
     ///exactly this number, as suspended or deleted content is removed after retrieving the initial
     ///collection of tweets.
@@ -502,7 +500,7 @@ pub struct Timeline<'a> {
     pub min_id: Option<u64>,
 }
 
-impl<'a> Timeline<'a> {
+impl Timeline {
     ///Clear the saved IDs on this timeline.
     pub fn reset(&mut self) {
         self.max_id = None;
@@ -510,7 +508,7 @@ impl<'a> Timeline<'a> {
     }
 
     ///Clear the saved IDs on this timeline, and return the most recent set of tweets.
-    pub fn start(mut self) -> TimelineFuture<'a> {
+    pub fn start(mut self) -> TimelineFuture {
         self.reset();
 
         self.older(None)
@@ -518,9 +516,9 @@ impl<'a> Timeline<'a> {
 
     ///Return the set of tweets older than the last set pulled, optionally placing a minimum tweet
     ///ID to bound with.
-    pub fn older(self, since_id: Option<u64>) -> TimelineFuture<'a> {
+    pub fn older(self, since_id: Option<u64>) -> TimelineFuture {
         let req = self.request(since_id, self.min_id.map(|id| id - 1));
-        let loader = make_parsed_future(req);
+        let loader = Box::pin(request_with_json_response(req));
 
         TimelineFuture {
             timeline: Some(self),
@@ -530,9 +528,9 @@ impl<'a> Timeline<'a> {
 
     ///Return the set of tweets newer than the last set pulled, optionall placing a maximum tweet
     ///ID to bound with.
-    pub fn newer(self, max_id: Option<u64>) -> TimelineFuture<'a> {
+    pub fn newer(self, max_id: Option<u64>) -> TimelineFuture {
         let req = self.request(self.max_id, max_id);
-        let loader = make_parsed_future(req);
+        let loader = Box::pin(request_with_json_response(req));
 
         TimelineFuture {
             timeline: Some(self),
@@ -547,24 +545,22 @@ impl<'a> Timeline<'a> {
     ///
     ///If the range of tweets given by the IDs would return more than `self.count`, the newest set
     ///of tweets will be returned.
-    pub fn call(&self, since_id: Option<u64>, max_id: Option<u64>) -> FutureResponse<Vec<Tweet>> {
-        make_parsed_future(self.request(since_id, max_id))
+    pub async fn call(
+        &self,
+        since_id: Option<u64>,
+        max_id: Option<u64>,
+    ) -> Result<Response<Vec<Tweet>>> {
+        request_with_json_response(self.request(since_id, max_id)).await
     }
 
     ///Helper function to construct a `Request` from the current state.
     fn request(&self, since_id: Option<u64>, max_id: Option<u64>) -> Request<Body> {
-        let mut params = self.params_base.as_ref().cloned().unwrap_or_default();
-        add_param(&mut params, "count", self.count.to_string());
-        add_param(&mut params, "tweet_mode", "extended");
-        add_param(&mut params, "include_ext_alt_text", "true");
-
-        if let Some(id) = since_id {
-            add_param(&mut params, "since_id", id.to_string());
-        }
-
-        if let Some(id) = max_id {
-            add_param(&mut params, "max_id", id.to_string());
-        }
+        let params = ParamList::from(self.params_base.as_ref().cloned().unwrap_or_default())
+            .add_param("count", self.count.to_string())
+            .add_param("tweet_mode", "extended")
+            .add_param("include_ext_alt_text", "true")
+            .add_opt_param("since_id", since_id.map(|v| v.to_string()))
+            .add_opt_param("max_id", max_id.map(|v| v.to_string()));
 
         auth::get(self.link, &self.token, Some(&params))
     }
@@ -584,10 +580,9 @@ impl<'a> Timeline<'a> {
     }
 
     ///Create an instance of `Timeline` with the given link and tokens.
-    #[doc(hidden)]
-    pub fn new(
+    pub(crate) fn new(
         link: &'static str,
-        params_base: Option<ParamList<'a>>,
+        params_base: Option<ParamList>,
         token: &auth::Token,
     ) -> Self {
         Timeline {
@@ -607,25 +602,24 @@ impl<'a> Timeline<'a> {
 /// updated the IDs in the parent `Timeline`) or the error encountered when loading or parsing the
 /// response.
 #[must_use = "futures do nothing unless polled"]
-pub struct TimelineFuture<'timeline> {
-    timeline: Option<Timeline<'timeline>>,
+pub struct TimelineFuture {
+    timeline: Option<Timeline>,
     loader: FutureResponse<Vec<Tweet>>,
 }
 
-impl<'timeline> Future for TimelineFuture<'timeline> {
-    type Item = (Timeline<'timeline>, Response<Vec<Tweet>>);
-    type Error = error::Error;
+impl Future for TimelineFuture {
+    type Output = Result<(Timeline, Response<Vec<Tweet>>)>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.loader.poll() {
-            Err(e) => Err(e),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Ok(Async::Ready(resp)) => {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        match Pin::new(&mut self.loader).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok(resp)) => {
                 if let Some(mut timeline) = self.timeline.take() {
                     timeline.map_ids(&resp.response);
-                    Ok(Async::Ready((timeline, resp)))
+                    Poll::Ready(Ok((timeline, resp)))
                 } else {
-                    Err(error::Error::FutureAlreadyCompleted)
+                    Poll::Ready(Err(error::Error::FutureAlreadyCompleted))
                 }
             }
         }
@@ -647,13 +641,13 @@ impl<'timeline> Future for TimelineFuture<'timeline> {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// # use egg_mode::tweet::DraftTweet;
 /// # let draft = DraftTweet::new("This is an example status!");
 ///
-/// block_on_all(draft.send(&token)).unwrap();
+/// draft.send(&token).await.unwrap();
 /// # }
 /// ```
 ///
@@ -663,27 +657,27 @@ impl<'timeline> Future for TimelineFuture<'timeline> {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// use egg_mode::tweet::DraftTweet;
 ///
 /// let draft = DraftTweet::new("I'd like to start a thread here.");
-/// let tweet = block_on_all(draft.send(&token)).unwrap();
+/// let tweet = draft.send(&token).await.unwrap();
 ///
 /// let draft = DraftTweet::new("You see, I have a lot of things to say.")
 ///                        .in_reply_to(tweet.id);
-/// let tweet = block_on_all(draft.send(&token)).unwrap();
+/// let tweet = draft.send(&token).await.unwrap();
 ///
 /// let draft = DraftTweet::new("Thank you for your time.")
 ///                        .in_reply_to(tweet.id);
-/// let tweet = block_on_all(draft.send(&token)).unwrap();
+/// let tweet = draft.send(&token).await.unwrap();
 /// # }
 /// ```
 #[derive(Debug, Clone)]
-pub struct DraftTweet<'a> {
+pub struct DraftTweet {
     ///The text of the draft tweet.
-    pub text: Cow<'a, str>,
+    pub text: Cow<'static, str>,
     ///If present, the ID of the tweet this draft is replying to.
     pub in_reply_to: Option<u64>,
     ///If present, whether to automatically fill reply mentions from the metadata of the
@@ -691,7 +685,7 @@ pub struct DraftTweet<'a> {
     pub auto_populate_reply_metadata: Option<bool>,
     ///If present, the list of user IDs to exclude from the automatically-populated metadata pulled
     ///when `auto_populate_reply_metadata` is true.
-    pub exclude_reply_user_ids: Option<Cow<'a, [u64]>>,
+    pub exclude_reply_user_ids: Option<Cow<'static, [u64]>>,
     ///If present, the tweet link to quote or a [DM deep link][] to include in the tweet's
     ///attachment metadata.
     ///
@@ -699,14 +693,14 @@ pub struct DraftTweet<'a> {
     ///error when the draft is sent.
     ///
     ///[DM deep link]: https://business.twitter.com/en/help/campaign-editing-and-optimization/public-to-private-conversation.html
-    pub attachment_url: Option<Cow<'a, str>>,
+    pub attachment_url: Option<CowStr>,
     ///If present, the latitude/longitude coordinates to attach to the draft.
     pub coordinates: Option<(f64, f64)>,
     ///If present (and if `coordinates` is present), indicates whether to display a pin on the
     ///exact coordinate when the eventual tweet is displayed.
     pub display_coordinates: Option<bool>,
     ///If present the Place to attach to this draft.
-    pub place_id: Option<Cow<'a, str>>,
+    pub place_id: Option<CowStr>,
     ///List of media entities associated with tweet.
     ///
     ///A tweet can have one video, one GIF, or up to four images attached to it. When attaching
@@ -716,15 +710,15 @@ pub struct DraftTweet<'a> {
     ///[the `media` module]: ../media/index.html
     ///
     ///`DraftTweet` treats zeros in this array as if the media were not present.
-    pub media_ids: [u64; 4],
+    pub media_ids: Vec<media::MediaId>,
     ///States whether the media attached with `media_ids` should be labeled as "possibly
     ///sensitive", to mask the media by default.
     pub possibly_sensitive: Option<bool>,
 }
 
-impl<'a> DraftTweet<'a> {
+impl DraftTweet {
     ///Creates a new `DraftTweet` with the given status text.
-    pub fn new<S: Into<Cow<'a, str>>>(text: S) -> Self {
+    pub fn new<S: Into<Cow<'static, str>>>(text: S) -> Self {
         DraftTweet {
             text: text.into(),
             in_reply_to: None,
@@ -734,7 +728,7 @@ impl<'a> DraftTweet<'a> {
             coordinates: None,
             display_coordinates: None,
             place_id: None,
-            media_ids: [0; 4],
+            media_ids: Vec::new(),
             possibly_sensitive: None,
         }
     }
@@ -772,7 +766,7 @@ impl<'a> DraftTweet<'a> {
     ///
     ///Note that you cannot use this parameter to remove the author of the parent tweet from the
     ///reply list. Twitter will silently ignore the author's ID in that scenario.
-    pub fn exclude_reply_user_ids<V: Into<Cow<'a, [u64]>>>(self, user_ids: V) -> Self {
+    pub fn exclude_reply_user_ids<V: Into<Cow<'static, [u64]>>>(self, user_ids: V) -> Self {
         DraftTweet {
             exclude_reply_user_ids: Some(user_ids.into()),
             ..self
@@ -786,7 +780,7 @@ impl<'a> DraftTweet<'a> {
     ///error when this draft is sent.
     ///
     ///[DM deep link]: https://business.twitter.com/en/help/campaign-editing-and-optimization/public-to-private-conversation.html
-    pub fn attachment_url<S: Into<Cow<'a, str>>>(self, url: S) -> Self {
+    pub fn attachment_url<S: Into<Cow<'static, str>>>(self, url: S) -> Self {
         DraftTweet {
             attachment_url: Some(url.into()),
             ..self
@@ -813,7 +807,7 @@ impl<'a> DraftTweet<'a> {
     ///what location is displayed with the tweet.
     ///
     ///Location fields will be ignored unless the user has enabled geolocation from their profile.
-    pub fn place_id<S: Into<Cow<'a, str>>>(self, place_id: S) -> Self {
+    pub fn place_id<S: Into<CowStr>>(self, place_id: S) -> Self {
         DraftTweet {
             place_id: Some(place_id.into()),
             ..self
@@ -824,17 +818,12 @@ impl<'a> DraftTweet<'a> {
     ///the first four will be attached. Note that Twitter will only allow one GIF, one video, or up
     ///to four images to be attached to a single tweet.
     ///
-    ///Note that if this is called multiple times, only the last set of IDs will be kept.
-    pub fn media_ids(self, media_ids: &[u64]) -> Self {
-        DraftTweet {
-            media_ids: {
-                let mut ret = [0; 4];
-                let len = ::std::cmp::min(media_ids.len(), 4);
-                ret[..len].copy_from_slice(&media_ids[..len]);
-                ret
-            },
-            ..self
+    /// Note that if this is called multiple times, only the last four IDs will be kept.
+    pub fn add_media(&mut self, media_id: media::MediaId) {
+        if self.media_ids.len() == 4 {
+            self.media_ids.remove(0);
         }
+        self.media_ids.push(media_id);
     }
 
     ///Marks the media attached with `media_ids` as being sensitive, so it can be hidden by
@@ -847,21 +836,21 @@ impl<'a> DraftTweet<'a> {
     }
 
     ///Send the assembled tweet as the authenticated user.
-    pub fn send(&self, token: &auth::Token) -> FutureResponse<Tweet> {
-        let mut params = HashMap::new();
-        add_param(&mut params, "status", self.text.clone());
-
-        if let Some(reply) = self.in_reply_to {
-            add_param(&mut params, "in_reply_to_status_id", reply.to_string());
-        }
-
-        if let Some(auto_populate) = self.auto_populate_reply_metadata {
-            add_param(
-                &mut params,
+    pub async fn send(&self, token: &auth::Token) -> Result<Response<Tweet>> {
+        let mut params = ParamList::new()
+            .add_param("status", self.text.clone())
+            .add_opt_param("in_reply_to_status_id", self.in_reply_to.map_string())
+            .add_opt_param(
                 "auto_populate_reply_metadata",
-                auto_populate.to_string(),
-            );
-        }
+                self.auto_populate_reply_metadata.map_string(),
+            )
+            .add_opt_param(
+                "attachment_url",
+                self.attachment_url.as_ref().map(|v| v.clone()),
+            )
+            .add_opt_param("display_coordinates", self.display_coordinates.map_string())
+            .add_opt_param("place_id", self.place_id.as_ref().map(|v| v.clone()))
+            .add_opt_param("possible_sensitive", self.possibly_sensitive.map_string());
 
         if let Some(ref exclude) = self.exclude_reply_user_ids {
             let list = exclude
@@ -869,43 +858,29 @@ impl<'a> DraftTweet<'a> {
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            add_param(&mut params, "exclude_reply_user_ids", list);
-        }
-
-        if let Some(ref url) = self.attachment_url {
-            add_param(&mut params, "attachment_url", url.clone());
+            params.add_param_ref("exclude_reply_user_ids", list);
         }
 
         if let Some((lat, long)) = self.coordinates {
-            add_param(&mut params, "lat", lat.to_string());
-            add_param(&mut params, "long", long.to_string());
+            params.add_param_ref("lat", lat.to_string());
+            params.add_param_ref("long", long.to_string());
         }
 
-        if let Some(display) = self.display_coordinates {
-            add_param(&mut params, "display_coordinates", display.to_string());
-        }
+        let media = {
+            let media = self
+                .media_ids
+                .iter()
+                .map(|x| x.0.as_str())
+                .collect::<Vec<_>>();
+            media.join(",")
+        };
 
-        if let Some(ref place_id) = self.place_id {
-            add_param(&mut params, "place_id", place_id.clone());
-        }
-
-        let media = self
-            .media_ids
-            .iter()
-            .filter(|&&id| id != 0)
-            .map(|id| id.to_string())
-            .collect::<Vec<String>>()
-            .join(",");
         if !media.is_empty() {
-            add_param(&mut params, "media_ids", media);
-        }
-
-        if let Some(sensitive) = self.possibly_sensitive {
-            add_param(&mut params, "possibly_sensitive", sensitive.to_string());
+            params.add_param_ref("media_ids", media);
         }
 
         let req = auth::post(links::statuses::UPDATE, token, Some(&params));
-        make_parsed_future(req)
+        request_with_json_response(req).await
     }
 }
 
@@ -930,8 +905,9 @@ mod tests {
         assert!(sample.user.is_some());
         assert_eq!(sample.user.unwrap().screen_name, "0xabad1dea");
         assert_eq!(sample.id, 782349500404862976);
-        assert_eq!(sample.source.name, "Tweetbot for iΟS"); //note that's an omicron, not an O
-        assert_eq!(sample.source.url, "http://tapbots.com/tweetbot");
+        let source = sample.source.as_ref().unwrap();
+        assert_eq!(source.name, "Tweetbot for iΟS"); //note that's an omicron, not an O
+        assert_eq!(source.url, "http://tapbots.com/tweetbot");
         assert_eq!(sample.created_at.weekday(), Weekday::Sat);
         assert_eq!(sample.created_at.year(), 2016);
         assert_eq!(sample.created_at.month(), 10);
@@ -1019,5 +995,4 @@ mod tests {
             Some("test alt text for the image".to_string())
         );
     }
-
 }

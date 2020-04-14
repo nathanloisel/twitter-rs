@@ -16,10 +16,12 @@
 //!
 //! There are a couple prerequisites to using egg-mode, which its examples also assume:
 //!
-//! * This library provides several types which implement the `Future` trait, but does not describe
-//!   how to interact with them. The examples use the `block_on_all` method from [tokio]'s runtime
-//!   to show a synchronous interaction, but more advanced scenarios are beyond the scope of this
-//!   documentation. See the [tokio] documentation for more information.
+//! * All methods that hit the twitter API are `async` and should be awaited with the `.await` syntax.
+//!   All such calls return a result type with the `Error` enum as their Error value.
+//!   The resulting future must be executed on a `tokio` executor.
+//!   For more information, check out the [Rust `async` book][rust-futures] and the
+//!   [Tokio documentation guides][].
+//!
 //! * Twitter tracks API use through "tokens" which are managed by Twitter and processed separately
 //!   for each "authenticated user" you wish to connect to your app. egg-mode's [Token]
 //!   documentation describes how you can obtain one of these, but each example outside of the
@@ -28,15 +30,17 @@
 //!
 //! [Token]: enum.Token.html
 //! [tokio]: https://tokio.rs
+//! [rust-futures]: https://rust-lang.github.io/async-book/
+//! [Tokio documentation guides]: https://tokio.rs/docs/overview
 //!
 //! To load the profile information of a single user:
 //!
 //! ```rust,no_run
 //! # use egg_mode::Token;
-//! use tokio::runtime::current_thread::block_on_all;
-//! # fn main() {
+//! # #[tokio::main]
+//! # async fn main() {
 //! # let token: Token = unimplemented!();
-//! let rustlang = block_on_all(egg_mode::user::show("rustlang", &token)).unwrap();
+//! let rustlang = egg_mode::user::show("rustlang", &token).await.unwrap();
 //!
 //! println!("{} (@{})", rustlang.name, rustlang.screen_name);
 //! # }
@@ -46,12 +50,12 @@
 //!
 //! ```rust,no_run
 //! # use egg_mode::Token;
-//! use tokio::runtime::current_thread::block_on_all;
 //! use egg_mode::tweet::DraftTweet;
-//! # fn main() {
+//! # #[tokio::main]
+//! # async fn main() {
 //! # let token: Token = unimplemented!();
 //!
-//! let post = block_on_all(DraftTweet::new("Hey Twitter!").send(&token)).unwrap();
+//! let post = DraftTweet::new("Hey Twitter!").send(&token).await.unwrap();
 //! # }
 //! ```
 //!
@@ -70,27 +74,9 @@
 //! for the most part you can access fields of the final result without having to grab the
 //! `response` field directly.
 //!
-//! `Response` also has IntoIterator implementations and iterator creation methods that echo those
-//! on `Vec<T>`, for methods that return Vecs. These methods and iterator types distribute the
-//! rate-limit information across each iteration.
-//!
 //! [`Response`]: struct.Response.html
 //!
-//! ## `TwitterFuture<'a, T>`
-//!
-//! Any method that requires a network call will return a handle to the pending network call, in
-//! most cases the type [`TwitterFuture`][]. This type (and any other `*Future` in this library)
-//! implements the `Future` trait, for use as an asynchronous network call. All `Future`
-//! implementations in this library use the `Error` enum as their Error value. For more information
-//! on how to use the `Future` trait, check out the [Tokio documentation guides][].
-//!
-//! In addition, there is also a `FutureResponse` type alias, that corresponds to
-//! `TwitterFuture<'a, Response<T>>`, for methods that return rate-limit information.
-//!
-//! [`TwitterFuture`]: struct.TwitterFuture.html
-//! [Tokio documentation guides]: https://tokio.rs/docs/getting-started/tokio/
-//!
-//! ## Authentication Types/Functions
+//! ## Authentication
 //!
 //! The remaining types and methods are explained as part of the [authentication overview][Token],
 //! with the exception of `verify_tokens`, which is a simple method to ensure a given token is
@@ -148,9 +134,6 @@
 #![warn(unused_extern_crates)]
 #![warn(unused_qualifications)]
 
-// #[macro_use]
-// extern crate serde_derive;
-
 #[macro_use]
 mod common;
 mod auth;
@@ -170,8 +153,6 @@ pub mod user;
 
 pub use crate::auth::{
     access_token, authenticate_url, authorize_url, bearer_token, invalidate_bearer, request_token,
-    verify_tokens, AuthFuture, KeyPair, Token,
+    verify_tokens, KeyPair, Token,
 };
-pub use crate::common::{
-    FutureResponse, Response, ResponseIter, ResponseIterMut, ResponseIterRef, TwitterFuture,
-};
+pub use crate::common::Response;

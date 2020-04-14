@@ -17,6 +17,7 @@
 //! [config]: fn.config.html
 
 use std::collections::HashMap;
+use std::result::Result as StdResult;
 use std::str::FromStr;
 
 use serde::de::Error;
@@ -24,54 +25,46 @@ use serde::{Deserialize, Deserializer};
 use serde_json;
 
 use crate::common::*;
-use crate::error::Error::{InvalidResponse, MissingValue};
-use crate::{auth, entities, error, links};
+use crate::error::{
+    Error::{InvalidResponse, MissingValue},
+    Result,
+};
+use crate::{auth, entities, links};
 
 ///Returns a future that resolves to the current Twitter Terms of Service as plain text.
 ///
 ///While the official home of Twitter's TOS is <https://twitter.com/tos>, this allows you to obtain a
 ///plain-text copy of it to display in your application.
-pub fn terms(token: &auth::Token) -> FutureResponse<String> {
+pub async fn terms(token: &auth::Token) -> Result<Response<String>> {
     let req = auth::get(links::service::TERMS, token, None);
 
-    fn parse_terms(full_resp: String, headers: &Headers) -> Result<Response<String>, error::Error> {
-        let ret: Response<serde_json::Value> = make_response(full_resp, headers)?;
+    let ret = request_with_json_response::<serde_json::Value>(req).await?;
 
-        let tos = ret
-            .response
-            .get("tos")
-            .and_then(|tos| tos.as_str())
-            .map(String::from)
-            .ok_or_else(|| InvalidResponse("Missing field: tos", None))?;
-        Ok(Response::map(ret, |_| tos))
-    }
-
-    make_future(req, parse_terms)
+    let tos = ret
+        .response
+        .get("tos")
+        .and_then(|tos| tos.as_str())
+        .map(String::from)
+        .ok_or_else(|| InvalidResponse("Missing field: tos", None))?;
+    Ok(Response::map(ret, |_| tos))
 }
 
 ///Returns a future that resolves to the current Twitter Privacy Policy as plain text.
 ///
 ///While the official home of Twitter's Privacy Policy is <https://twitter.com/privacy>, this allows
 ///you to obtain a plain-text copy of it to display in your application.
-pub fn privacy(token: &auth::Token) -> FutureResponse<String> {
+pub async fn privacy(token: &auth::Token) -> Result<Response<String>> {
     let req = auth::get(links::service::PRIVACY, token, None);
 
-    fn parse_policy(
-        full_resp: String,
-        headers: &Headers,
-    ) -> Result<Response<String>, error::Error> {
-        let ret: Response<serde_json::Value> = make_response(full_resp, headers)?;
+    let ret = request_with_json_response::<serde_json::Value>(req).await?;
 
-        let privacy = ret
-            .response
-            .get("privacy")
-            .and_then(|tos| tos.as_str())
-            .map(String::from)
-            .ok_or_else(|| InvalidResponse("Missing field: privacy", None))?;
-        Ok(Response::map(ret, |_| privacy))
-    }
-
-    make_future(req, parse_policy)
+    let privacy = ret
+        .response
+        .get("privacy")
+        .and_then(|tos| tos.as_str())
+        .map(String::from)
+        .ok_or_else(|| InvalidResponse("Missing field: privacy", None))?;
+    Ok(Response::map(ret, |_| privacy))
 }
 
 ///Returns a future that resolves to the current configuration from Twitter, including the maximum
@@ -84,10 +77,9 @@ pub fn privacy(token: &auth::Token) -> FutureResponse<String> {
 ///fields returned by this function mean.
 ///
 ///[`Configuration`]: struct.Configuration.html
-pub fn config(token: &auth::Token) -> FutureResponse<Configuration> {
+pub async fn config(token: &auth::Token) -> Result<Response<Configuration>> {
     let req = auth::get(links::service::CONFIG, token, None);
-
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Return the current rate-limit status for all available methods from the authenticated user.
@@ -97,20 +89,18 @@ pub fn config(token: &auth::Token) -> FutureResponse<Configuration> {
 ///documentation for [`RateLimitStatus`][] and its associated enums for more information.
 ///
 ///[`RateLimitStatus`]: struct.RateLimitStatus.html
-pub fn rate_limit_status(token: &auth::Token) -> FutureResponse<RateLimitStatus> {
+pub async fn rate_limit_status(token: &auth::Token) -> Result<Response<RateLimitStatus>> {
     let req = auth::get(links::service::RATE_LIMIT_STATUS, token, None);
-
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Like `rate_limit_status`, but returns the raw JSON without processing it. Only intended to
 ///return the full structure so that new methods can be added to `RateLimitStatus` and its
 ///associated enums.
 #[doc(hidden)]
-pub fn rate_limit_status_raw(token: &auth::Token) -> FutureResponse<serde_json::Value> {
+pub async fn rate_limit_status_raw(token: &auth::Token) -> Result<Response<serde_json::Value>> {
     let req = auth::get(links::service::RATE_LIMIT_STATUS, token, None);
-
-    make_parsed_future(req)
+    request_with_json_response(req).await
 }
 
 ///Represents a service configuration from Twitter.
@@ -161,13 +151,13 @@ pub struct Configuration {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
-/// # let status = block_on_all(egg_mode::service::rate_limit_status(&token)).unwrap();
+/// # let status = egg_mode::service::rate_limit_status(&token).await.unwrap();
 /// use egg_mode::service::TweetMethod;
 /// println!("home_timeline calls remaining: {}",
-///          status.tweet[&TweetMethod::HomeTimeline].rate_limit_remaining);
+///          status.tweet[&TweetMethod::HomeTimeline].rate_limit_status.remaining);
 /// # }
 /// ```
 ///
@@ -196,7 +186,7 @@ pub struct RateLimitStatus {
 }
 
 impl<'de> Deserialize<'de> for RateLimitStatus {
-    fn deserialize<D>(ser: D) -> Result<Self, D::Error>
+    fn deserialize<D>(ser: D) -> StdResult<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -256,13 +246,13 @@ impl<'de> Deserialize<'de> for RateLimitStatus {
         }
 
         Ok(RateLimitStatus {
-            direct: direct,
-            place: place,
-            search: search,
-            service: service,
-            tweet: tweet,
-            user: user,
-            list: list,
+            direct,
+            place,
+            search,
+            service,
+            tweet,
+            user,
+            list,
         })
     }
 }
@@ -288,7 +278,7 @@ enum Method {
 impl FromStr for Method {
     type Err = ();
 
-    fn from_str(s: &str) -> Result<Self, ()> {
+    fn from_str(s: &str) -> StdResult<Self, ()> {
         match s {
             "/direct_messages" => Ok(Method::Direct(DirectMethod::Received)),
             "/direct_messages/sent" => Ok(Method::Direct(DirectMethod::Sent)),
@@ -492,5 +482,4 @@ mod tests {
         let sample = load_file("sample_payloads/rate_limit_sample.json");
         ::serde_json::from_str::<RateLimitStatus>(&sample).unwrap();
     }
-
 }

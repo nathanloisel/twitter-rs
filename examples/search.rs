@@ -4,21 +4,23 @@
 
 mod common;
 
-use tokio::runtime::current_thread::block_on_all;
-
 use egg_mode::search::{self, ResultType};
 
-fn main() {
-    let config = common::Config::load();
+use std::io::{stdin, BufRead};
 
-    //rust tweets around dallas
-    let search = block_on_all(
-        search::search("rustlang")
-            .result_type(ResultType::Recent)
-            .count(10)
-            .call(&config.token),
-    )
-    .unwrap();
+#[tokio::main]
+async fn main() {
+    let config = common::Config::load().await;
+
+    println!("Search term:");
+    let line = stdin().lock().lines().next().unwrap().unwrap();
+
+    let search = search::search(line)
+        .result_type(ResultType::Recent)
+        .count(10)
+        .call(&config.token)
+        .await
+        .unwrap();
 
     for tweet in &search.statuses {
         common::print_tweet(tweet);

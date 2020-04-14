@@ -11,15 +11,16 @@
 //!
 //! ```rust,no_run
 //! # use egg_mode::Token;
-//! use tokio::runtime::current_thread::block_on_all;
-//! # fn main() {
+//! # #[tokio::main]
+//! # async fn main() {
 //! # let token: Token = unimplemented!();
 //! use egg_mode::search::{self, ResultType};
 //!
-//! let search = block_on_all(search::search("rustlang")
-//!                                  .result_type(ResultType::Recent)
-//!                                  .call(&token))
-//!                  .unwrap();
+//! let search = search::search("rustlang")
+//!     .result_type(ResultType::Recent)
+//!     .call(&token)
+//!     .await
+//!     .unwrap();
 //!
 //! for tweet in &search.statuses {
 //!     println!("(@{}) {}", tweet.user.as_ref().unwrap().screen_name, tweet.text);
@@ -40,19 +41,11 @@
 //! page][search-place]. A future version of egg-mode might break these options into further
 //! methods on `SearchBuilder`.
 //!
-//! The lifetime parameter on `SearchBuilder`, `SearchFuture`, and `SearchResult` correspond to the
-//! text given as the search query and (if applicable) to the `lang` method of `SearchBuilder`. As
-//! these types use `Cow<'a, str>` internally, you can hand these types owned Strings to give them
-//! a `'static` lifetime, if necessary.
-//!
 //! [search-doc]: https://dev.twitter.com/rest/public/search
 //! [search-place]: https://dev.twitter.com/rest/public/search-by-place
 
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fmt;
 
-use futures::{Async, Future, Poll};
 use serde::{Deserialize, Deserializer};
 
 use crate::common::*;
@@ -60,7 +53,7 @@ use crate::tweet::Tweet;
 use crate::{auth, error, links};
 
 ///Begin setting up a tweet search with the given query.
-pub fn search<'a, S: Into<Cow<'a, str>>>(query: S) -> SearchBuilder<'a> {
+pub fn search<S: Into<CowStr>>(query: S) -> SearchBuilder {
     SearchBuilder {
         query: query.into(),
         lang: None,
@@ -105,10 +98,10 @@ pub enum Distance {
 
 ///Represents a tweet search query before being sent.
 #[must_use = "SearchBuilder is lazy and won't do anything unless `call`ed"]
-pub struct SearchBuilder<'a> {
+pub struct SearchBuilder {
     ///The text to search for.
-    query: Cow<'a, str>,
-    lang: Option<Cow<'a, str>>,
+    query: CowStr,
+    lang: Option<CowStr>,
     result_type: Option<ResultType>,
     count: Option<u32>,
     until: Option<(u32, u32, u32)>,
@@ -117,10 +110,10 @@ pub struct SearchBuilder<'a> {
     max_id: Option<u64>,
 }
 
-impl<'a> SearchBuilder<'a> {
+impl SearchBuilder {
     ///Restrict search results to those that have been machine-parsed as the given two-letter
     ///language code.
-    pub fn lang<S: Into<Cow<'a, str>>>(self, lang: S) -> Self {
+    pub fn lang<S: Into<CowStr>>(self, lang: S) -> Self {
         SearchBuilder {
             lang: Some(lang.into()),
             ..self
@@ -182,107 +175,57 @@ impl<'a> SearchBuilder<'a> {
     }
 
     ///Finalize the search terms and return the first page of responses.
-    pub fn call(self, token: &auth::Token) -> SearchFuture<'a> {
-        let mut params = HashMap::new();
-
-        add_param(&mut params, "q", self.query);
-
-        if let Some(lang) = self.lang {
-            add_param(&mut params, "lang", lang);
-        }
-
-        if let Some(result_type) = self.result_type {
-            add_param(&mut params, "result_type", result_type.to_string());
-        }
-
-        if let Some(count) = self.count {
-            add_param(&mut params, "count", count.to_string());
-        }
-
-        if let Some((year, month, day)) = self.until {
-            add_param(&mut params, "until", format!("{}-{}-{}", year, month, day));
-        }
-
-        if let Some((lat, lon, radius)) = self.geocode {
-            match radius {
-                Distance::Miles(r) => add_param(
-                    &mut params,
-                    "geocode",
-                    format!("{:.6},{:.6},{}mi", lat, lon, r),
-                ),
-                Distance::Kilometers(r) => add_param(
-                    &mut params,
-                    "geocode",
-                    format!("{:.6},{:.6},{}km", lat, lon, r),
-                ),
-            };
-        }
-
-        if let Some(since_id) = self.since_id {
-            add_param(&mut params, "since_id", since_id.to_string());
-        }
-
-        if let Some(max_id) = self.max_id {
-            add_param(&mut params, "max_id", max_id.to_string());
-        }
+    pub async fn call(self, token: &auth::Token) -> Result<Response<SearchResult>, error::Error> {
+        let params = ParamList::new()
+            .extended_tweets()
+            .add_param("q", self.query)
+            .add_opt_param("lang", self.lang)
+            .add_opt_param("result_type", self.result_type.map_string())
+            .add_opt_param("count", self.count.map_string())
+            .add_opt_param("since_id", self.since_id.map_string())
+            .add_opt_param("max_id", self.max_id.map_string())
+            .add_opt_param(
+                "until",
+                self.until
+                    .map(|(year, month, day)| format!("{}-{}-{}", year, month, day)),
+            )
+            .add_opt_param(
+                "geocode",
+                self.geocode.map(|(lat, lon, radius)| match radius {
+                    Distance::Miles(r) => format!("{:.6},{:.6},{}mi", lat, lon, r),
+                    Distance::Kilometers(r) => format!("{:.6},{:.6},{}km", lat, lon, r),
+                }),
+            );
 
         let req = auth::get(links::statuses::SEARCH, token, Some(&params));
+        let mut resp = request_with_json_response::<SearchResult>(req).await?;
 
-        SearchFuture {
-            loader: make_parsed_future(req),
-            params: Some(params),
-        }
-    }
-}
-
-/// `Future` that represents a search query in progress.
-///
-/// When this future resolves, it will either contain a `SearchResult` or the error that was
-/// encountered while loading or parsing the response.
-#[must_use = "futures do nothing unless polled"]
-pub struct SearchFuture<'a> {
-    loader: FutureResponse<SearchResult<'a>>,
-    params: Option<ParamList<'a>>,
-}
-
-impl<'a> Future for SearchFuture<'a> {
-    type Item = Response<SearchResult<'a>>;
-    type Error = error::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut resp = match self.loader.poll() {
-            Ok(Async::Ready(resp)) => resp,
-            Ok(Async::NotReady) => return Ok(Async::NotReady),
-            Err(e) => return Err(e),
-        };
-
-        resp.params = self.params.take();
-        Ok(Async::Ready(resp))
+        resp.response.params = Some(params);
+        Ok(resp)
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct RawSearch<'a> {
-    #[serde(borrow)]
-    search_metadata: RawSearchMetaData<'a>,
+struct RawSearch {
+    search_metadata: RawSearchMetaData,
     statuses: Vec<Tweet>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawSearchMetaData<'a> {
+struct RawSearchMetaData {
     completed_in: f64,
     max_id: u64,
     /// absent if no more results to retrieve
-    next_results: Option<&'a str>,
-    query: &'a str,
+    next_results: Option<String>,
+    query: String,
     /// absent if no results
-    refresh_url: Option<&'a str>,
+    refresh_url: Option<String>,
     count: u64,
     since_id: u64,
 }
 
-impl<'de> Deserialize<'de> for SearchResult<'static> {
-    fn deserialize<D>(deser: D) -> Result<SearchResult<'static>, D::Error>
+impl<'de> Deserialize<'de> for SearchResult {
+    fn deserialize<D>(deser: D) -> Result<SearchResult, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -299,7 +242,7 @@ impl<'de> Deserialize<'de> for SearchResult<'static> {
 
 ///Represents a page of search results, along with metadata to request the next or previous page.
 #[derive(Debug)]
-pub struct SearchResult<'a> {
+pub struct SearchResult {
     ///The list of statuses in this page of results.
     pub statuses: Vec<Tweet>,
     ///The query used to generate this page of results. Note that changing this will not affect the
@@ -309,45 +252,46 @@ pub struct SearchResult<'a> {
     pub max_id: u64,
     ///First tweet id in this page of results. This id can be used in `SearchBuilder::since_tweet`
     pub since_id: u64,
-    params: Option<ParamList<'a>>,
+    params: Option<ParamList>,
 }
 
-impl<'a> SearchResult<'a> {
+impl SearchResult {
     ///Load the next page of search results for the same query.
-    pub fn older(&self, token: &auth::Token) -> SearchFuture<'a> {
-        let mut params = self.params.as_ref().cloned().unwrap_or_default();
+    pub async fn older(&self, token: &auth::Token) -> Result<Response<SearchResult>, error::Error> {
+        let mut params =
+            ParamList::from(self.params.as_ref().cloned().unwrap_or_default()).extended_tweets();
+
         params.remove("since_id");
 
         if let Some(min_id) = self.statuses.iter().map(|t| t.id).min() {
-            add_param(&mut params, "max_id", (min_id - 1).to_string());
+            params.add_param_ref("max_id", (min_id - 1).to_string());
         } else {
             params.remove("max_id");
         }
 
         let req = auth::get(links::statuses::SEARCH, token, Some(&params));
+        let mut resp = request_with_json_response::<SearchResult>(req).await?;
 
-        SearchFuture {
-            loader: make_parsed_future(req),
-            params: Some(params),
-        }
+        resp.response.params = Some(params);
+        Ok(resp)
     }
 
     ///Load the previous page of search results for the same query.
-    pub fn newer(&self, token: &auth::Token) -> SearchFuture<'a> {
-        let mut params = self.params.as_ref().cloned().unwrap_or_default();
-        params.remove("max_id");
+    pub async fn newer(&self, token: &auth::Token) -> Result<Response<SearchResult>, error::Error> {
+        let mut params =
+            ParamList::from(self.params.as_ref().cloned().unwrap_or_default()).extended_tweets();
 
+        params.remove("max_id");
         if let Some(max_id) = self.statuses.iter().map(|t| t.id).max() {
-            add_param(&mut params, "since_id", max_id.to_string());
+            params.add_param_ref("since_id", max_id.to_string());
         } else {
             params.remove("since_id");
         }
 
         let req = auth::get(links::statuses::SEARCH, token, Some(&params));
+        let mut resp = request_with_json_response::<SearchResult>(req).await?;
 
-        SearchFuture {
-            loader: make_parsed_future(req),
-            params: Some(params),
-        }
+        resp.response.params = Some(params);
+        Ok(resp)
     }
 }

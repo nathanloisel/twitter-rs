@@ -55,11 +55,13 @@
 //! - `mutes`/`mutes_ids`
 //! - `incoming_requests`/`outgoing_requests`
 
-use std::borrow::Cow;
-use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::vec::IntoIter as VecIter;
 
 use chrono;
-use futures::{Async, Future, Poll, Stream};
+use futures::Stream;
 use serde::{Deserialize, Deserializer};
 
 use crate::common::*;
@@ -84,50 +86,26 @@ pub use self::fun::*;
 /// * `&String` (to counteract the fact that deref coercion doesn't work with generics)
 /// * `&UserID` (convenient when used with iterators)
 ///
-/// This way, when a function in egg-mode has a paremeter of type `T: Into<UserID<'a>>`, you can
+/// This way, when a function in egg-mode has a paremeter of type `T: Into<UserID>`, you can
 /// call it with any of these types, and it will be converted automatically. egg-mode will then use
 /// the proper parameter when performing the call to Twitter.
-#[derive(Debug, Copy, Clone)]
-pub enum UserID<'a> {
+#[derive(Debug, Clone, derive_more::From)]
+pub enum UserID {
     /// Referring via the account's numeric ID.
     ID(u64),
     /// Referring via the account's screen name.
-    ScreenName(&'a str),
+    ScreenName(CowStr),
 }
 
-impl<'a> From<u64> for UserID<'a> {
-    fn from(id: u64) -> UserID<'a> {
-        UserID::ID(id)
+impl<'a> From<&'static str> for UserID {
+    fn from(name: &'static str) -> UserID {
+        UserID::ScreenName(name.into())
     }
 }
 
-impl<'a> From<&'a u64> for UserID<'a> {
-    fn from(id: &'a u64) -> UserID<'a> {
-        UserID::ID(*id)
-    }
-}
-
-impl<'a> From<&'a str> for UserID<'a> {
-    fn from(name: &'a str) -> UserID<'a> {
-        UserID::ScreenName(name)
-    }
-}
-
-impl<'a, 'b> From<&'b &'a str> for UserID<'a> {
-    fn from(name: &'b &'a str) -> UserID<'a> {
-        UserID::ScreenName(*name)
-    }
-}
-
-impl<'a> From<&'a String> for UserID<'a> {
-    fn from(name: &'a String) -> UserID<'a> {
-        UserID::ScreenName(name.as_str())
-    }
-}
-
-impl<'a> From<&'a UserID<'a>> for UserID<'a> {
-    fn from(id: &'a UserID<'a>) -> UserID<'a> {
-        *id
+impl From<String> for UserID {
+    fn from(name: String) -> UserID {
+        UserID::ScreenName(name.into())
     }
 }
 
@@ -422,15 +400,15 @@ pub struct UserEntityDetail {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// use futures::Stream;
+/// use futures::{Stream, StreamExt, TryStreamExt};
 ///
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
-/// block_on_all(egg_mode::user::search("rustlang", &token).take(10).for_each(|resp| {
+/// egg_mode::user::search("rustlang", &token).take(10).try_for_each(|resp| {
 ///     println!("{}", resp.screen_name);
-///     Ok(())
-/// })).unwrap();
+///     futures::future::ready(Ok(()))
+/// }).await.unwrap();
 /// # }
 /// ```
 ///
@@ -439,19 +417,22 @@ pub struct UserEntityDetail {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
-/// use futures::Stream;
+/// use futures::{Stream, StreamExt, TryStreamExt};
 /// use egg_mode::Response;
 /// use egg_mode::user::TwitterUser;
 /// use egg_mode::error::Error;
 ///
 /// // Because Streams don't have a FromIterator adaptor, we load all the responses first, then
 /// // collect them into the final Vec
-/// let names: Result<Response<Vec<TwitterUser>>, Error> =
-///     block_on_all(egg_mode::user::search("rustlang", &token).take(10).collect())
-///         .map(|resp| resp.into_iter().collect());
+/// let names: Result<Vec<TwitterUser>, Error> =
+///     egg_mode::user::search("rustlang", &token)
+///         .take(10)
+///         .try_collect::<Vec<_>>()
+///         .await
+///         .map(|res| res.into_iter().collect());
 /// # }
 /// ```
 ///
@@ -472,25 +453,25 @@ pub struct UserEntityDetail {
 /// by `with_page_size`/the `page_size` field) when it's polled, and serving the individual
 /// elements from that locally-cached page until it runs out. This can be nice, but it also means
 /// that your only warning that something involves a network call is that the stream returns
-/// `Ok(Async::NotReady)`, by which time the network call has already started. If you want to know
+/// `Poll::Pending`, by which time the network call has already started. If you want to know
 /// that ahead of time, that's where the `call()` method comes in. By using `call()`, you can get
 /// a page of results directly from Twitter. With that you can iterate over the results and page
 /// forward and backward as needed:
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// let mut search = egg_mode::user::search("rustlang", &token).with_page_size(20);
-/// let resp = block_on_all(search.call()).unwrap();
+/// let resp = search.call().await.unwrap();
 ///
 /// for user in resp.response {
 ///    println!("{} (@{})", user.name, user.screen_name);
 /// }
 ///
 /// search.page_num += 1;
-/// let resp = block_on_all(search.call()).unwrap();
+/// let resp = search.call().await.unwrap();
 ///
 /// for user in resp.response {
 ///    println!("{} (@{})", user.name, user.screen_name);
@@ -498,18 +479,18 @@ pub struct UserEntityDetail {
 /// # }
 /// ```
 #[must_use = "search iterators are lazy and do nothing unless consumed"]
-pub struct UserSearch<'a> {
+pub struct UserSearch {
     token: auth::Token,
-    query: Cow<'a, str>,
+    query: CowStr,
     /// The current page of results being returned, starting at 1.
     pub page_num: i32,
     /// The number of user records per page of results. Defaults to 10, maximum of 20.
     pub page_size: i32,
     current_loader: Option<FutureResponse<Vec<TwitterUser>>>,
-    current_results: Option<ResponseIter<TwitterUser>>,
+    current_results: Option<VecIter<TwitterUser>>,
 }
 
-impl<'a> UserSearch<'a> {
+impl UserSearch {
     /// Sets the page size used for the search query.
     ///
     /// Calling this will invalidate any current search results, making the next call to `next()`
@@ -541,19 +522,18 @@ impl<'a> UserSearch<'a> {
     /// This will automatically be called if you use the `UserSearch` as an iterator. This method is
     /// made public for convenience if you want to manage the pagination yourself. Remember to
     /// change `page_num` between calls.
-    pub fn call(&self) -> FutureResponse<Vec<TwitterUser>> {
-        let mut params = HashMap::new();
-        add_param(&mut params, "q", self.query.clone());
-        add_param(&mut params, "page", self.page_num.to_string());
-        add_param(&mut params, "count", self.page_size.to_string());
+    pub fn call(&self) -> impl Future<Output = error::Result<Response<Vec<TwitterUser>>>> {
+        let params = ParamList::new()
+            .add_param("q", self.query.clone())
+            .add_param("page", self.page_num.to_string())
+            .add_param("count", self.page_size.to_string());
 
         let req = auth::get(links::users::SEARCH, &self.token, Some(&params));
-
-        make_parsed_future(req)
+        request_with_json_response(req)
     }
 
     /// Returns a new UserSearch with the given query and tokens, with the default page size of 10.
-    fn new<S: Into<Cow<'a, str>>>(query: S, token: &auth::Token) -> UserSearch<'a> {
+    fn new<S: Into<CowStr>>(query: S, token: &auth::Token) -> UserSearch {
         UserSearch {
             token: token.clone(),
             query: query.into(),
@@ -565,38 +545,37 @@ impl<'a> UserSearch<'a> {
     }
 }
 
-impl<'a> Stream for UserSearch<'a> {
-    type Item = Response<TwitterUser>;
-    type Error = error::Error;
+impl Stream for UserSearch {
+    type Item = Result<TwitterUser, error::Error>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         if let Some(mut fut) = self.current_loader.take() {
-            match fut.poll() {
-                Ok(Async::NotReady) => {
+            match Pin::new(&mut fut).poll(cx) {
+                Poll::Pending => {
                     self.current_loader = Some(fut);
-                    return Ok(Async::NotReady);
+                    return Poll::Pending;
                 }
-                Ok(Async::Ready(res)) => self.current_results = Some(res.into_iter()),
-                Err(e) => {
+                Poll::Ready(Ok(res)) => self.current_results = Some(res.response.into_iter()),
+                Poll::Ready(Err(e)) => {
                     //Invalidate current results so we don't increment the page number again
                     self.current_results = None;
-                    return Err(e);
+                    return Poll::Ready(Some(Err(e)));
                 }
             }
         }
 
         if let Some(ref mut results) = self.current_results {
             if let Some(user) = results.next() {
-                return Ok(Async::Ready(Some(user)));
+                return Poll::Ready(Some(Ok(user)));
             } else if (results.len() as i32) < self.page_size {
-                return Ok(Async::Ready(None));
+                return Poll::Ready(None);
             } else {
                 self.page_num += 1;
             }
         }
 
-        self.current_loader = Some(self.call());
-        self.poll()
+        self.current_loader = Some(Box::pin(self.call()));
+        self.poll_next(cx)
     }
 }
 

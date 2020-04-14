@@ -4,12 +4,12 @@
 
 mod common;
 
-use egg_mode::tweet;
+use egg_mode::{error::Result, tweet};
 use std::collections::{HashSet, VecDeque};
-use tokio::runtime::current_thread::block_on_all;
 
-fn main() {
-    let c = common::Config::load();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let c = common::Config::load().await;
 
     //Thread Reconstruction
     //
@@ -42,14 +42,14 @@ fn main() {
     let mut thread = VecDeque::with_capacity(21);
     let mut thread_ids = HashSet::new();
 
-    let start_tweet = block_on_all(tweet::show(start_id, &c.token)).unwrap();
+    let start_tweet = tweet::show(start_id, &c.token).await?;
     let thread_user = start_tweet.user.as_ref().unwrap().id;
     thread_ids.insert(start_tweet.id);
     thread.push_front(start_tweet.response);
 
-    for _ in 0..10 {
+    for _ in 0usize..10 {
         if let Some(id) = thread.front().and_then(|t| t.in_reply_to_status_id) {
-            let parent = block_on_all(tweet::show(id, &c.token)).unwrap();
+            let parent = tweet::show(id, &c.token).await?;
             thread_ids.insert(parent.id);
             thread.push_front(parent.response);
         } else {
@@ -59,15 +59,17 @@ fn main() {
 
     let replies = tweet::user_timeline(thread_user, true, false, &c.token);
 
-    for tweet in block_on_all(replies.call(Some(start_id), None))
-        .unwrap()
+    for tweet in replies
+        .call(Some(start_id), None)
+        .await?
+        .response
         .into_iter()
         .rev()
     {
         if let Some(reply_id) = tweet.in_reply_to_status_id {
             if thread_ids.contains(&reply_id) {
                 thread_ids.insert(tweet.id);
-                thread.push_back(tweet.response);
+                thread.push_back(tweet);
             }
         }
 
@@ -83,4 +85,5 @@ fn main() {
         }
         common::print_tweet(&tweet);
     }
+    Ok(())
 }

@@ -67,13 +67,11 @@
 //! - `show`
 //! - `statuses`
 
-use std::collections::HashMap;
-
 use chrono;
 use serde::Deserialize;
 
 use crate::common::*;
-use crate::{auth, error, links, user};
+use crate::{auth, links, user};
 
 mod fun;
 pub use self::fun::*;
@@ -101,22 +99,22 @@ pub use self::fun::*;
 /// let slug = ListID::from_slug("Twitter", "support");
 /// let id = ListID::from_id(99924643);
 /// ```
-#[derive(Debug, Copy, Clone)]
-pub enum ListID<'a> {
+#[derive(Debug, Clone)]
+pub enum ListID {
     ///Referring via the list's owner and its "slug" or name.
-    Slug(user::UserID<'a>, &'a str),
+    Slug(user::UserID, CowStr),
     ///Referring via the list's numeric ID.
     ID(u64),
 }
 
-impl<'a> ListID<'a> {
+impl ListID {
     ///Make a new `ListID` by supplying its owner and name.
-    pub fn from_slug<T: Into<user::UserID<'a>>>(owner: T, list_name: &'a str) -> ListID<'a> {
-        ListID::Slug(owner.into(), list_name)
+    pub fn from_slug<T: Into<user::UserID>>(owner: T, list_name: impl Into<CowStr>) -> ListID {
+        ListID::Slug(owner.into(), list_name.into())
     }
 
     ///Make a new `ListID` by supplying its numeric ID.
-    pub fn from_id(list_id: u64) -> ListID<'a> {
+    pub fn from_id(list_id: u64) -> ListID {
         ListID::ID(list_id)
     }
 }
@@ -176,34 +174,34 @@ pub struct List {
 ///
 /// ```rust,no_run
 /// # use egg_mode::Token;
-/// use tokio::runtime::current_thread::block_on_all;
-/// # fn main() {
+/// # #[tokio::main]
+/// # async fn main() {
 /// # let token: Token = unimplemented!();
 /// use egg_mode::list::{self, ListID};
 ///
 /// //remember, you can only update a list if you own it!
 /// let update = list::update(ListID::from_slug("Twitter", "support"));
-/// let list = block_on_all(update.name("Official Support").send(&token)).unwrap();
+/// let list = update.name("Official Support").send(&token).await.unwrap();
 /// # }
 /// ```
-pub struct ListUpdate<'a> {
-    list: ListID<'a>,
-    name: Option<&'a str>,
+pub struct ListUpdate {
+    list: ListID,
+    name: Option<String>,
     public: Option<bool>,
-    desc: Option<&'a str>,
+    desc: Option<String>,
 }
 
-impl<'a> ListUpdate<'a> {
+impl ListUpdate {
     ///Updates the name of the list.
-    pub fn name(self, name: &'a str) -> ListUpdate<'a> {
+    pub fn name(self, name: impl Into<String>) -> ListUpdate {
         ListUpdate {
-            name: Some(name),
+            name: Some(name.into()),
             ..self
         }
     }
 
     ///Sets whether the list is public.
-    pub fn public(self, public: bool) -> ListUpdate<'a> {
+    pub fn public(self, public: bool) -> ListUpdate {
         ListUpdate {
             public: Some(public),
             ..self
@@ -211,7 +209,7 @@ impl<'a> ListUpdate<'a> {
     }
 
     ///Updates the description of the list.
-    pub fn desc(self, desc: &'a str) -> ListUpdate<'a> {
+    pub fn desc(self, desc: String) -> ListUpdate {
         ListUpdate {
             desc: Some(desc),
             ..self
@@ -219,29 +217,18 @@ impl<'a> ListUpdate<'a> {
     }
 
     ///Sends the update request to Twitter.
-    pub fn send(self, token: &auth::Token) -> FutureResponse<List> {
-        let mut params = HashMap::new();
-        add_list_param(&mut params, &self.list);
-
-        if let Some(name) = self.name {
-            add_param(&mut params, "name", name);
-        }
-
-        if let Some(public) = self.public {
-            if public {
-                add_param(&mut params, "mode", "public");
-            } else {
-                add_param(&mut params, "mode", "private");
-            }
-        }
-
-        if let Some(desc) = self.desc {
-            add_param(&mut params, "description", desc);
-        }
+    pub async fn send(self, token: &auth::Token) -> Result<Response<List>, crate::error::Error> {
+        let params = ParamList::new()
+            .add_list_param(self.list)
+            .add_opt_param("name", self.name)
+            .add_opt_param(
+                "mode",
+                self.public.map(|p| if p { "public" } else { "private" }),
+            )
+            .add_opt_param("description", self.desc);
 
         let req = auth::post(links::lists::UPDATE, token, Some(&params));
-
-        make_parsed_future(req)
+        request_with_json_response(req).await
     }
 }
 
